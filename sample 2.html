@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Garment & Data Assistant</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-950 p-4">
+    <div class="max-w-7xl mx-auto flex justify-between items-center">
+      <h1 class="text-xl font-bold text-indigo-400">📊 INWARD REPORT</h1>
+      <span id="dataStatus" class="text-xs bg-amber-900/50 text-amber-400 border border-amber-700/50 px-3 py-1 rounded-full font-mono">Loading Data...</span>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto w-full p-6 flex-grow grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- Left Controls: File Summary (Upload Section Removed) -->
+    <div class="space-y-6">
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg">
+        <h2 class="text-md font-semibold text-slate-200 mb-3">Data File Summary</h2>
+        <div id="fileSummary" class="text-sm text-slate-400 space-y-2">
+          <p class="animate-pulse">Loading `PRODUCT COST.xlsx` automatically...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Query Engine -->
+    <div class="lg:col-span-2 space-y-6">
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg">
+        <h2 class="text-md font-semibold text-slate-200 mb-3">Ask Questions About Your Data</h2>
+        <div class="flex gap-2">
+          <input type="text" id="queryInput" placeholder="e.g., 'Total Quantity for October 2026 B2B', 'need inward quantity factory wise'" 
+            class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500" />
+          <button id="searchBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2 rounded-lg font-medium transition-colors">
+            Ask
+          </button>
+        </div>
+        <p class="text-xs text-slate-400 mt-2">B2B includes both 'FG - B2B - Boxes' and 'FG - Blanks - Pieces'. Factory grouping uses 'Contact1'.</p>
+      </div>
+
+      <!-- Automated Insights Display -->
+      <div id="answerCard" class="hidden bg-slate-800 border border-indigo-500/30 rounded-xl p-5 shadow-lg">
+        <h3 class="text-sm font-bold text-indigo-400 uppercase tracking-wider mb-2">Automated Insights & Calculations</h3>
+        <div id="answerContent" class="text-sm text-slate-200 space-y-3"></div>
+      </div>
+
+      <!-- Table View -->
+      <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg">
+        <h3 class="text-md font-semibold text-slate-200 mb-3" id="resultsTitle">Matching Records</h3>
+        <div class="overflow-x-auto max-h-96 border border-slate-700 rounded-lg">
+          <table class="w-full text-left text-xs text-slate-300" id="dataTable">
+            <thead class="bg-slate-900 text-slate-400 sticky top-0 border-b border-slate-700">
+              <tr id="tableHead"></tr>
+            </thead>
+            <tbody id="tableBody" class="divide-y divide-slate-700/50">
+              <tr><td class="p-4 text-center text-slate-500" colspan="100%">Loading data file automatically...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // Embedded file relative path or filename in local directory
+    const AUTO_FILE_PATH = "PRODUCT COST.xlsx";
+
+    let rawData = [];
+    let headers = [];
+
+    const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+    
+    const stopWords = new Set([
+      'need', 'want', 'give', 'get', 'show', 'tell', 'me', 'list', 'details', 'records', 'data',
+      'wise', 'factorywise', 'stylewise', 'categorywise', 'breakdown', 'group', 'grouped',
+      'total', 'quantity', 'qty', 'cost', 'amount', 'sum', 'pcs', 'pieces', 'weekly', 'monthly', 'daily',
+      'inward', 'inwards', 'inflow', 'received', 'receipt', 'receipts',
+      'for', 'on', 'in', 'at', 'by', 'from', 'to', 'of', 'with', 'during', 'the', 'a', 'an', 'and', 'or',
+      'what', 'is', 'are', 'was', 'were', 'calculate', 'find'
+    ]);
+
+    const metricColumnNames = new Set(['quantity', 'qty', 'cost', 'cost of product', 'unit price per pcs', 'unit price', 'day']);
+
+    function parseDateStringSafe(val) {
+      if (!val) return null;
+      if (val instanceof Date) {
+        return new Date(val.getUTCFullYear(), val.getUTCMonth(), val.getUTCDate());
+      }
+
+      let str = String(val).trim();
+      let parts = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+      if (parts) {
+        return new Date(parseInt(parts[1]), parseInt(parts[2]) - 1, parseInt(parts[3]));
+      }
+      
+      let usParts = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+      if (usParts) {
+        return new Date(parseInt(usParts[3]), parseInt(usParts[1]) - 1, parseInt(usParts[2]));
+      }
+
+      let parsed = new Date(str);
+      if (!isNaN(parsed.getTime())) {
+        return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+      }
+      return null;
+    }
+
+    function calculateCustomWeek(dateObj) {
+      if (!dateObj || isNaN(dateObj.getTime())) return "Unknown";
+      
+      const year = dateObj.getFullYear();
+      const monthIdx = dateObj.getMonth();
+      const monthStr = String(monthIdx + 1).padStart(2, '0');
+      
+      let weekNum = 1;
+      let cur = new Date(year, monthIdx, 1);
+
+      while (cur < dateObj) {
+        if (cur.getDay() === 0) {
+          weekNum++;
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+      return `${year}-${monthStr} Week ${weekNum}`;
+    }
+
+    // Automatically load dataset on page load
+    window.addEventListener('DOMContentLoaded', autoLoadDataset);
+
+    async function autoLoadDataset() {
+      const statusEl = document.getElementById('dataStatus');
+      const summaryEl = document.getElementById('fileSummary');
+
+      try {
+        const response = await fetch(encodeURIComponent(AUTO_FILE_PATH));
+        if (!response.ok) throw new Error("File not accessible directly via fetch");
+        
+        const arrayBuffer = await response.arrayBuffer();
+        const data = new Uint8Array(arrayBuffer);
+        
+        parseExcelBuffer(data, "PRODUCT COST.xlsx");
+        
+        statusEl.innerText = "100% Loaded & Private";
+        statusEl.className = "text-xs bg-emerald-900/50 text-emerald-400 border border-emerald-700/50 px-3 py-1 rounded-full font-mono";
+      } catch (err) {
+        statusEl.innerText = "Load Error";
+        statusEl.className = "text-xs bg-rose-900/50 text-rose-400 border border-rose-700/50 px-3 py-1 rounded-full font-mono";
+        
+        summaryEl.innerHTML = `
+          <p class="text-amber-400 font-semibold">Note for Local Files:</p>
+          <p class="text-xs text-slate-300">To load <code>PRODUCT COST.xlsx</code> automatically without uploading, serve this folder via a local server (e.g. VS Code Live Server or <code>npx serve</code>).</p>
+        `;
+      }
+    }
+
+    function parseExcelBuffer(buffer, fileName) {
+      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, dateNF: 'yyyy-mm-dd' });
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      
+      const json = XLSX.utils.sheet_to_json(worksheet, { defval: "", raw: false });
+      
+      rawData = json.map(row => {
+        let dt = null;
+        for (let key in row) {
+          if (key.toLowerCase().includes("date") && row[key]) {
+            dt = parseDateStringSafe(row[key]);
+            if (dt) break;
+          }
+        }
+        return {
+          ...row,
+          _parsedDate: dt,
+          _customWeek: dt ? calculateCustomWeek(dt) : "N/A"
+        };
+      });
+
+      if (rawData.length > 0) {
+        headers = Object.keys(rawData[0]).filter(k => !k.startsWith('_'));
+        updateFileSummary(fileName, rawData.length, headers);
+        renderTable(rawData);
+      }
+    }
+
+    function updateFileSummary(fileName, totalRows, headers) {
+      document.getElementById('fileSummary').innerHTML = `
+        <p><strong>File:</strong> ${fileName}</p>
+        <p><strong>Total Rows:</strong> ${totalRows.toLocaleString()}</p>
+        <p><strong>Detected Columns (${headers.length}):</strong></p>
+        <div class="flex flex-wrap gap-1 mt-1 max-h-48 overflow-y-auto">
+          ${headers.map(h => `<span class="bg-slate-700 text-slate-300 text-xs px-2 py-0.5 rounded">${h}</span>`).join('')}
+        </div>
+      `;
+    }
+
+    document.getElementById('searchBtn').addEventListener('click', parseAndAnswer);
+    document.getElementById('queryInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') parseAndAnswer();
+    });
+
+    function parseAndAnswer() {
+      const rawQuery = document.getElementById('queryInput').value.trim();
+      const q = rawQuery.toLowerCase();
+      if (!rawData.length) return alert("Data file is still loading or unavailable!");
+
+      let filtered = [...rawData];
+
+      // 1. Month / Year parsing
+      let matchedMonth = monthNames.findIndex(m => q.includes(m));
+      let matchedYear = q.match(/\b(202[0-9])\b/);
+
+      if (matchedMonth !== -1 || matchedYear) {
+        filtered = filtered.filter(r => {
+          if (!r._parsedDate) return false;
+          let mMatch = matchedMonth === -1 || r._parsedDate.getMonth() === matchedMonth;
+          let yMatch = !matchedYear || r._parsedDate.getFullYear() === parseInt(matchedYear[0]);
+          return mMatch && yMatch;
+        });
+      }
+
+      // 2. Product Category Specific Mapping (B2B = FG - B2B - Boxes + FG - Blanks - Pieces)
+      let categoryCol = headers.find(h => h.toLowerCase() === 'stock moves/product category') || 
+                        headers.find(h => h.toLowerCase() === 'product category') || 'Stock Moves/Product Category';
+
+      if (q.includes("b2b")) {
+        filtered = filtered.filter(r => {
+          let catVal = String(r[categoryCol] || '').toLowerCase();
+          return catVal.includes("b2b") || catVal.includes("blank");
+        });
+      } else if (q.includes("d2c")) {
+        filtered = filtered.filter(r => {
+          let catVal = String(r[categoryCol] || '').toLowerCase();
+          return catVal.includes("d2c");
+        });
+      } else if (q.includes("blanks") || q.includes("blank")) {
+        filtered = filtered.filter(r => {
+          let catVal = String(r[categoryCol] || '').toLowerCase();
+          return catVal.includes("blank");
+        });
+      }
+
+      // 3. Dynamic Group-By Target Determination
+      let groupByCol = null;
+      let matchedColNameInQuery = null;
+
+      if (q.includes("factory") || q.includes("supplier") || q.includes("vendor")) {
+        groupByCol = headers.find(h => h.toLowerCase() === 'contact1') || 'Contact1';
+        matchedColNameInQuery = 'factory';
+      } else {
+        let groupableHeaders = headers
+          .filter(h => !metricColumnNames.has(h.toLowerCase().trim()))
+          .sort((a,b) => b.length - a.length);
+
+        for (let h of groupableHeaders) {
+          let hNorm = h.toLowerCase().trim();
+          if (q.includes(hNorm)) {
+            groupByCol = h;
+            matchedColNameInQuery = hNorm;
+            break;
+          }
+        }
+      }
+
+      // 4. Keyword parsing for remaining search terms
+      let rawTokens = q.split(/[^\w\/]+/);
+      let tokens = rawTokens.filter(t => 
+        t.length > 0 &&
+        !monthNames.includes(t) && 
+        !t.match(/^(202[0-9])$/) && 
+        !stopWords.has(t) &&
+        !['b2b', 'd2c', 'blanks', 'blank'].includes(t) &&
+        (!matchedColNameInQuery || !matchedColNameInQuery.includes(t)) &&
+        !['factory', 'supplier', 'vendor'].includes(t)
+      );
+
+      if (tokens.length > 0) {
+        filtered = filtered.filter(row => {
+          let rowStr = Object.values(row).join(' ').toLowerCase();
+          return tokens.every(tok => rowStr.includes(tok));
+        });
+      }
+
+      renderTable(filtered);
+      buildInsightSummary(filtered, rawQuery, groupByCol);
+    }
+
+    function buildInsightSummary(results, query, groupByCol) {
+      const card = document.getElementById('answerCard');
+      const content = document.getElementById('answerContent');
+
+      if (results.length === 0) {
+        content.innerHTML = `<p class="text-amber-400">No matching records found for "${query}".</p>`;
+        card.classList.remove('hidden');
+        return;
+      }
+
+      let totalQty = 0;
+      let totalCost = 0;
+      let weeklyBreakdown = {};
+      let groupedBreakdown = {};
+
+      results.forEach(r => {
+        let qtyKey = Object.keys(r).find(k => k.toLowerCase().includes('quantity') || k.toLowerCase() === 'qty');
+        let costKey = Object.keys(r).find(k => k.toLowerCase().includes('cost') || k.toLowerCase().includes('amount'));
+
+        let qVal = qtyKey ? parseFloat(String(r[qtyKey]).replace(/,/g, '')) || 0 : 0;
+        let cVal = costKey ? parseFloat(String(r[costKey]).replace(/,/g, '')) || 0 : 0;
+
+        totalQty += qVal;
+        totalCost += cVal;
+
+        let w = r._customWeek || "N/A";
+        if (!weeklyBreakdown[w]) weeklyBreakdown[w] = { qty: 0, cost: 0, count: 0 };
+        weeklyBreakdown[w].qty += qVal;
+        weeklyBreakdown[w].cost += cVal;
+        weeklyBreakdown[w].count++;
+
+        if (groupByCol) {
+          let gKey = String(r[groupByCol] !== undefined && r[groupByCol] !== "" ? r[groupByCol] : "(Blank)").trim();
+          if (!groupedBreakdown[gKey]) groupedBreakdown[gKey] = { qty: 0, cost: 0, count: 0 };
+          groupedBreakdown[gKey].qty += qVal;
+          groupedBreakdown[gKey].cost += cVal;
+          groupedBreakdown[gKey].count++;
+        }
+      });
+
+      let html = `<p>Found <strong>${results.length.toLocaleString()}</strong> rows matching "<em>${query}</em>":</p>`;
+      html += `
+        <div class="grid grid-cols-2 gap-4 my-2">
+          <div class="bg-slate-900 p-3 rounded-lg border border-slate-700">
+            <span class="text-xs text-slate-400 block">Total Quantity</span>
+            <span class="text-lg font-bold text-emerald-400">${totalQty.toLocaleString()} pcs</span>
+          </div>
+          <div class="bg-slate-900 p-3 rounded-lg border border-slate-700">
+            <span class="text-xs text-slate-400 block">Total Cost / Amount</span>
+            <span class="text-lg font-bold text-indigo-400">₹${totalCost.toLocaleString(undefined, {maximumFractionDigits: 2})}</span>
+          </div>
+        </div>
+      `;
+
+      let groupKeys = Object.keys(groupedBreakdown).sort((a,b) => groupedBreakdown[b].qty - groupedBreakdown[a].qty);
+      if (groupKeys.length > 0) {
+        html += `<div class="mt-3"><span class="font-semibold text-indigo-300 text-xs block mb-1">Column Breakdown (${groupByCol}):</span>`;
+        html += `<div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden max-h-60 overflow-y-auto"><table class="w-full text-xs text-left">
+          <thead class="bg-slate-950 text-slate-400 border-b border-slate-800 sticky top-0">
+            <tr><th class="p-2">${groupByCol}</th><th class="p-2">Records</th><th class="p-2">Quantity</th><th class="p-2">Cost</th></tr>
+          </thead><tbody>`;
+        groupKeys.forEach(g => {
+          html += `<tr class="border-b border-slate-800/50 hover:bg-slate-800/40">
+            <td class="p-2 font-medium text-slate-200">${g}</td>
+            <td class="p-2 text-slate-400">${groupedBreakdown[g].count.toLocaleString()}</td>
+            <td class="p-2 text-emerald-400 font-semibold">${groupedBreakdown[g].qty.toLocaleString()} pcs</td>
+            <td class="p-2 text-slate-300">₹${groupedBreakdown[g].cost.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+          </tr>`;
+        });
+        html += `</table></div></div>`;
+      }
+
+      let weeks = Object.keys(weeklyBreakdown).sort();
+      if (weeks.length > 0 && (!groupByCol || weeks.length > 1)) {
+        html += `<div class="mt-3"><span class="font-semibold text-slate-300 text-xs block mb-1">Weekly Summary (1st of month start, Sunday close):</span>`;
+        html += `<div class="bg-slate-900 border border-slate-700 rounded-lg overflow-hidden max-h-48 overflow-y-auto"><table class="w-full text-xs text-left">
+          <thead class="bg-slate-950 text-slate-400 border-b border-slate-800 sticky top-0">
+            <tr><th class="p-2">Week</th><th class="p-2">Records</th><th class="p-2">Quantity</th><th class="p-2">Cost</th></tr>
+          </thead><tbody>`;
+        weeks.forEach(w => {
+          html += `<tr class="border-b border-slate-800/50">
+            <td class="p-2 font-mono text-indigo-300">${w}</td>
+            <td class="p-2">${weeklyBreakdown[w].count.toLocaleString()}</td>
+            <td class="p-2 text-emerald-400 font-semibold">${weeklyBreakdown[w].qty.toLocaleString()}</td>
+            <td class="p-2">₹${weeklyBreakdown[w].cost.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+          </tr>`;
+        });
+        html += `</table></div></div>`;
+      }
+
+      content.innerHTML = html;
+      card.classList.remove('hidden');
+    }
+
+    function renderTable(data) {
+      const headEl = document.getElementById('tableHead');
+      const bodyEl = document.getElementById('tableBody');
+      const titleEl = document.getElementById('resultsTitle');
+
+      titleEl.innerText = `Showing ${data.length.toLocaleString()} Records`;
+      headEl.innerHTML = '';
+      bodyEl.innerHTML = '';
+
+      if (data.length === 0) {
+        bodyEl.innerHTML = `<tr><td class="p-4 text-center text-slate-500" colspan="100%">No data matches the current query.</td></tr>`;
+        return;
+      }
+
+      headers.forEach(h => {
+        const th = document.createElement('th');
+        th.className = "p-3 font-semibold border-b border-slate-700 whitespace-nowrap";
+        th.innerText = h;
+        headEl.appendChild(th);
+      });
+
+      data.slice(0, 150).forEach(row => {
+        const tr = document.createElement('tr');
+        tr.className = "hover:bg-slate-700/30 transition-colors";
+        headers.forEach(h => {
+          const td = document.createElement('td');
+          td.className = "p-3 whitespace-nowrap text-slate-300";
+          td.innerText = row[h] !== undefined ? row[h] : '';
+          tr.appendChild(td);
+        });
+        bodyEl.appendChild(tr);
+      });
+    }
+  </script>
+</body>
+</html>
