@@ -34,13 +34,13 @@
       <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg">
         <h2 class="text-md font-semibold text-slate-200 mb-3">Ask Questions About Your Data</h2>
         <div class="flex gap-2">
-          <input type="text" id="queryInput" placeholder="e.g., 'October 2026 Quantity from 1st to 15th', 'GRN quantity FY27'" 
+          <input type="text" id="queryInput" placeholder="e.g., 'last month inward', 'October 2026 Quantity from 1st to 15th', 'FY27 B2B'" 
             class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500" />
           <button id="searchBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2 rounded-lg font-medium transition-colors">
             Ask
           </button>
         </div>
-        <p class="text-xs text-slate-400 mt-2">FY starts April 1st to March 31st (e.g. FY27 = Apr 2026 to Mar 2027). Supports day ranges like '1st to 15th'.</p>
+        <p class="text-xs text-slate-400 mt-2">Supports relative dates ('last month', 'this month'), FY ('FY27'), and day ranges ('1st to 15th').</p>
       </div>
 
       <!-- Automated Insights Display -->
@@ -72,17 +72,18 @@
 
     let rawData = [];
     let headers = [];
+    let maxDatasetDate = null; // Stores latest date found in dataset for relative calculations
 
     const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
     
-    // Updated stopWords list to treat 'grn' and 'inward' as synonyms for quantity search
     const stopWords = new Set([
       'need', 'want', 'give', 'get', 'show', 'tell', 'me', 'list', 'details', 'records', 'data',
       'wise', 'factorywise', 'stylewise', 'categorywise', 'breakdown', 'group', 'grouped',
       'total', 'quantity', 'qty', 'cost', 'amount', 'sum', 'pcs', 'pieces', 'weekly', 'monthly', 'daily',
       'inward', 'inwards', 'inflow', 'received', 'receipt', 'receipts', 'grn', 'grns',
       'for', 'on', 'in', 'at', 'by', 'from', 'to', 'of', 'with', 'during', 'the', 'a', 'an', 'and', 'or',
-      'what', 'is', 'are', 'was', 'were', 'calculate', 'find', 'st', 'nd', 'rd', 'th'
+      'what', 'is', 'are', 'was', 'were', 'calculate', 'find', 'st', 'nd', 'rd', 'th',
+      'last', 'this', 'next', 'month', 'year', 'past', 'previous'
     ]);
 
     const metricColumnNames = new Set(['quantity', 'qty', 'cost', 'cost of product', 'unit price per pcs', 'unit price', 'day']);
@@ -130,7 +131,37 @@
       return `${year}-${monthStr} Week ${weekNum}`;
     }
 
-    // Helper to parse day ranges like "1st to 15th", "5 to 20"
+    // Helper for relative date terms like "last month", "this month", "last year"
+    function parseRelativeDateRange(queryStr) {
+      const q = queryStr.toLowerCase();
+      // Reference anchor: use max dataset date if available, else current date
+      const refDate = maxDatasetDate ? new Date(maxDatasetDate) : new Date();
+
+      if (q.includes("last month") || q.includes("previous month") || q.includes("past month")) {
+        let targetMonth = refDate.getMonth() - 1;
+        let targetYear = refDate.getFullYear();
+        if (targetMonth < 0) {
+          targetMonth = 11;
+          targetYear--;
+        }
+        return { targetMonth, targetYear };
+      }
+
+      if (q.includes("this month") || q.includes("current month")) {
+        return { targetMonth: refDate.getMonth(), targetYear: refDate.getFullYear() };
+      }
+
+      if (q.includes("last year") || q.includes("previous year")) {
+        return { targetMonth: null, targetYear: refDate.getFullYear() - 1 };
+      }
+
+      if (q.includes("this year") || q.includes("current year")) {
+        return { targetMonth: null, targetYear: refDate.getFullYear() };
+      }
+
+      return null;
+    }
+
     function parseDayRange(queryStr) {
       const match = queryStr.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|-|until)\s*(\d{1,2})(?:st|nd|rd|th)?\b/i);
       if (match) {
@@ -143,7 +174,6 @@
       return null;
     }
 
-    // Helper to detect Fiscal Year ranges
     function parseFiscalYearRange(queryStr) {
       const match = queryStr.match(/\bfy\s*(\d{2}|\d{4})\b/i);
       if (match) {
@@ -151,15 +181,14 @@
         let endYear = yearNum < 100 ? 2000 + yearNum : yearNum;
         let startYear = endYear - 1;
 
-        let startDate = new Date(startYear, 3, 1); // April 1st
-        let endDate = new Date(endYear, 2, 31, 23, 59, 59); // March 31st
+        let startDate = new Date(startYear, 3, 1);
+        let endDate = new Date(endYear, 2, 31, 23, 59, 59);
 
         return { startDate, endDate, matchedString: match[0] };
       }
       return null;
     }
 
-    // Automatically load dataset on page load
     window.addEventListener('DOMContentLoaded', autoLoadDataset);
 
     async function autoLoadDataset() {
@@ -194,12 +223,19 @@
       
       const json = XLSX.utils.sheet_to_json(worksheet, { defval: "", raw: false });
       
+      maxDatasetDate = null;
+
       rawData = json.map(row => {
         let dt = null;
         for (let key in row) {
           if (key.toLowerCase().includes("date") && row[key]) {
             dt = parseDateStringSafe(row[key]);
-            if (dt) break;
+            if (dt) {
+              if (!maxDatasetDate || dt > maxDatasetDate) {
+                maxDatasetDate = dt;
+              }
+              break;
+            }
           }
         }
         return {
@@ -239,8 +275,9 @@
 
       let filtered = [...rawData];
 
-      // 1. Fiscal Year / Month / Day Range parsing
+      // 1. Fiscal Year / Relative Date / Month / Day Range parsing
       const fyRange = parseFiscalYearRange(q);
+      const relativeDate = parseRelativeDateRange(q);
       const dayRange = parseDayRange(q);
 
       if (fyRange) {
@@ -249,6 +286,14 @@
           let inFy = r._parsedDate >= fyRange.startDate && r._parsedDate <= fyRange.endDate;
           let inDayRange = !dayRange || (r._parsedDate.getDate() >= dayRange.startDay && r._parsedDate.getDate() <= dayRange.endDay);
           return inFy && inDayRange;
+        });
+      } else if (relativeDate) {
+        filtered = filtered.filter(r => {
+          if (!r._parsedDate) return false;
+          let mMatch = relativeDate.targetMonth === null || r._parsedDate.getMonth() === relativeDate.targetMonth;
+          let yMatch = relativeDate.targetYear === null || r._parsedDate.getFullYear() === relativeDate.targetYear;
+          let dMatch = !dayRange || (r._parsedDate.getDate() >= dayRange.startDay && r._parsedDate.getDate() <= dayRange.endDay);
+          return mMatch && yMatch && dMatch;
         });
       } else {
         let matchedMonth = monthNames.findIndex(m => q.includes(m));
@@ -308,7 +353,7 @@
         }
       }
 
-      // 4. Keyword parsing (Excludes day numbers like '1st', '15th', 'grn', 'inward')
+      // 4. Keyword parsing for remaining search terms
       let rawTokens = q.split(/[^\w\/]+/);
       let tokens = rawTokens.filter(t => 
         t.length > 0 &&
