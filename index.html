@@ -19,7 +19,7 @@
 
   <main class="max-w-7xl mx-auto w-full p-6 flex-grow grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-    <!-- Left Controls: File Summary (Upload Section Removed) -->
+    <!-- Left Controls: File Summary -->
     <div class="space-y-6">
       <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg">
         <h2 class="text-md font-semibold text-slate-200 mb-3">Data File Summary</h2>
@@ -34,13 +34,13 @@
       <div class="bg-slate-800 border border-slate-700 rounded-xl p-5 shadow-lg">
         <h2 class="text-md font-semibold text-slate-200 mb-3">Ask Questions About Your Data</h2>
         <div class="flex gap-2">
-          <input type="text" id="queryInput" placeholder="e.g., 'Total Quantity for October 2026 B2B', 'need inward quantity factory wise'" 
+          <input type="text" id="queryInput" placeholder="e.g., 'October 2026 Quantity from 1st to 15th', 'GRN quantity FY27'" 
             class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500" />
           <button id="searchBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2 rounded-lg font-medium transition-colors">
             Ask
           </button>
         </div>
-        <p class="text-xs text-slate-400 mt-2">B2B includes both 'FG - B2B - Boxes' and 'FG - Blanks - Pieces'. Factory grouping uses 'Contact1'.</p>
+        <p class="text-xs text-slate-400 mt-2">FY starts April 1st to March 31st (e.g. FY27 = Apr 2026 to Mar 2027). Supports day ranges like '1st to 15th'.</p>
       </div>
 
       <!-- Automated Insights Display -->
@@ -68,7 +68,6 @@
   </main>
 
   <script>
-    // Embedded file relative path or filename in local directory
     const AUTO_FILE_PATH = "PRODUCT COST.xlsx";
 
     let rawData = [];
@@ -76,13 +75,14 @@
 
     const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
     
+    // Updated stopWords list to treat 'grn' and 'inward' as synonyms for quantity search
     const stopWords = new Set([
       'need', 'want', 'give', 'get', 'show', 'tell', 'me', 'list', 'details', 'records', 'data',
       'wise', 'factorywise', 'stylewise', 'categorywise', 'breakdown', 'group', 'grouped',
       'total', 'quantity', 'qty', 'cost', 'amount', 'sum', 'pcs', 'pieces', 'weekly', 'monthly', 'daily',
-      'inward', 'inwards', 'inflow', 'received', 'receipt', 'receipts',
+      'inward', 'inwards', 'inflow', 'received', 'receipt', 'receipts', 'grn', 'grns',
       'for', 'on', 'in', 'at', 'by', 'from', 'to', 'of', 'with', 'during', 'the', 'a', 'an', 'and', 'or',
-      'what', 'is', 'are', 'was', 'were', 'calculate', 'find'
+      'what', 'is', 'are', 'was', 'were', 'calculate', 'find', 'st', 'nd', 'rd', 'th'
     ]);
 
     const metricColumnNames = new Set(['quantity', 'qty', 'cost', 'cost of product', 'unit price per pcs', 'unit price', 'day']);
@@ -128,6 +128,35 @@
         cur.setDate(cur.getDate() + 1);
       }
       return `${year}-${monthStr} Week ${weekNum}`;
+    }
+
+    // Helper to parse day ranges like "1st to 15th", "5 to 20"
+    function parseDayRange(queryStr) {
+      const match = queryStr.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|-|until)\s*(\d{1,2})(?:st|nd|rd|th)?\b/i);
+      if (match) {
+        return {
+          startDay: parseInt(match[1]),
+          endDay: parseInt(match[2]),
+          rawMatch: match[0]
+        };
+      }
+      return null;
+    }
+
+    // Helper to detect Fiscal Year ranges
+    function parseFiscalYearRange(queryStr) {
+      const match = queryStr.match(/\bfy\s*(\d{2}|\d{4})\b/i);
+      if (match) {
+        let yearNum = parseInt(match[1]);
+        let endYear = yearNum < 100 ? 2000 + yearNum : yearNum;
+        let startYear = endYear - 1;
+
+        let startDate = new Date(startYear, 3, 1); // April 1st
+        let endDate = new Date(endYear, 2, 31, 23, 59, 59); // March 31st
+
+        return { startDate, endDate, matchedString: match[0] };
+      }
+      return null;
     }
 
     // Automatically load dataset on page load
@@ -210,20 +239,33 @@
 
       let filtered = [...rawData];
 
-      // 1. Month / Year parsing
-      let matchedMonth = monthNames.findIndex(m => q.includes(m));
-      let matchedYear = q.match(/\b(202[0-9])\b/);
+      // 1. Fiscal Year / Month / Day Range parsing
+      const fyRange = parseFiscalYearRange(q);
+      const dayRange = parseDayRange(q);
 
-      if (matchedMonth !== -1 || matchedYear) {
+      if (fyRange) {
         filtered = filtered.filter(r => {
           if (!r._parsedDate) return false;
-          let mMatch = matchedMonth === -1 || r._parsedDate.getMonth() === matchedMonth;
-          let yMatch = !matchedYear || r._parsedDate.getFullYear() === parseInt(matchedYear[0]);
-          return mMatch && yMatch;
+          let inFy = r._parsedDate >= fyRange.startDate && r._parsedDate <= fyRange.endDate;
+          let inDayRange = !dayRange || (r._parsedDate.getDate() >= dayRange.startDay && r._parsedDate.getDate() <= dayRange.endDay);
+          return inFy && inDayRange;
         });
+      } else {
+        let matchedMonth = monthNames.findIndex(m => q.includes(m));
+        let matchedYear = q.match(/\b(202[0-9])\b/);
+
+        if (matchedMonth !== -1 || matchedYear || dayRange) {
+          filtered = filtered.filter(r => {
+            if (!r._parsedDate) return false;
+            let mMatch = matchedMonth === -1 || r._parsedDate.getMonth() === matchedMonth;
+            let yMatch = !matchedYear || r._parsedDate.getFullYear() === parseInt(matchedYear[0]);
+            let dMatch = !dayRange || (r._parsedDate.getDate() >= dayRange.startDay && r._parsedDate.getDate() <= dayRange.endDay);
+            return mMatch && yMatch && dMatch;
+          });
+        }
       }
 
-      // 2. Product Category Specific Mapping (B2B = FG - B2B - Boxes + FG - Blanks - Pieces)
+      // 2. Product Category Mapping
       let categoryCol = headers.find(h => h.toLowerCase() === 'stock moves/product category') || 
                         headers.find(h => h.toLowerCase() === 'product category') || 'Stock Moves/Product Category';
 
@@ -244,7 +286,7 @@
         });
       }
 
-      // 3. Dynamic Group-By Target Determination
+      // 3. Dynamic Grouping
       let groupByCol = null;
       let matchedColNameInQuery = null;
 
@@ -266,16 +308,18 @@
         }
       }
 
-      // 4. Keyword parsing for remaining search terms
+      // 4. Keyword parsing (Excludes day numbers like '1st', '15th', 'grn', 'inward')
       let rawTokens = q.split(/[^\w\/]+/);
       let tokens = rawTokens.filter(t => 
         t.length > 0 &&
         !monthNames.includes(t) && 
         !t.match(/^(202[0-9])$/) && 
+        !t.match(/^fy\d+$/i) &&
+        !t.match(/^\d+(st|nd|rd|th)?$/i) &&
         !stopWords.has(t) &&
         !['b2b', 'd2c', 'blanks', 'blank'].includes(t) &&
         (!matchedColNameInQuery || !matchedColNameInQuery.includes(t)) &&
-        !['factory', 'supplier', 'vendor'].includes(t)
+        !['factory', 'supplier', 'vendor', 'fy'].includes(t)
       );
 
       if (tokens.length > 0) {
